@@ -38,6 +38,13 @@ export function App() {
   const [importErrors, setImportErrors] = useState<string[] | null>(null);
   const [hypOpen, setHypOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  /**
+   * 用户操作序号：导入、单格编辑、载入演示、清空、采纳预演共享同一条先后顺序。
+   * 每个改变工作簿的操作都递增它；导入在选中文件时记下自己的序号，
+   * 异步读取结束时序号已落后即说明期间有更新的操作，迟到的结果
+   * （无论成功、校验失败还是读取失败）一律丢弃，不得改动当前工作簿或报错。
+   */
+  const opSeq = useRef(0);
 
   const refresh = useCallback(() => {
     setSnap(engine.getSnapshot());
@@ -58,7 +65,10 @@ export function App() {
       const before = engine.getSnapshot().revision;
       engine.setCell(addr, text);
       // 空编辑（内容未变）不产生新修订，也无需刷新快照
-      if (engine.getSnapshot().revision !== before) refresh();
+      if (engine.getSnapshot().revision !== before) {
+        opSeq.current++; // 真实修订：使仍在读取中的导入作废
+        refresh();
+      }
       setBarDraft(engine.getRaw(addr));
     },
     [engine, refresh],
@@ -138,7 +148,25 @@ export function App() {
   };
 
   const handleImportFile = async (file: File) => {
-    const text = await file.text();
+    // 选中文件本身即一次用户操作：此前仍在读取中的导入全部作废
+    const ticket = ++opSeq.current;
+    const isCurrent = () => ticket === opSeq.current;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      // 读取失败：仅当本导入仍是最新操作时给出稳定的失败提示；
+      // 否则属于迟到结果，静默丢弃，不打扰当前工作簿
+      if (isCurrent()) {
+        setImportErrors([
+          `文件「${file.name}」读取失败，导入未完成，已保留当前表格`,
+        ]);
+      }
+      return;
+    }
+    // 读取期间用户已进行更新的操作（编辑 / 载入演示 / 清空 / 新导入 / 采纳预演）：
+    // 迟到的旧结果不得覆盖当前表格、修订号，也不得弹出与本表无关的错误
+    if (!isCurrent()) return;
     const result = validateImport(text);
     if (!result.ok) {
       // 整份拒绝，保留上次有效表
@@ -153,6 +181,7 @@ export function App() {
   };
 
   const loadDemo = () => {
+    opSeq.current++; // 使仍在读取中的导入作废
     engine.loadGrid(DEMO);
     refresh();
     select('F1');
@@ -165,6 +194,7 @@ export function App() {
   const commitPreview = (p: HypothesisPreview): boolean => {
     const r = engine.commitHypothesis(p);
     if (r.ok) {
+      opSeq.current++; // 采纳预演改变正式网格：使仍在读取中的导入作废
       refresh();
       setBarDraft(engine.getRaw(selected));
       return true;
@@ -208,6 +238,7 @@ export function App() {
         <button
           className="btn"
           onClick={() => {
+            opSeq.current++; // 使仍在读取中的导入作废
             engine.clearAll();
             refresh();
           }}
