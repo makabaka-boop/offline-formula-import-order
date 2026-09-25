@@ -1,0 +1,551 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --border: #d6d9de;
+  --border-strong: #9aa1ab;
+  --text: #1f2430;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --err: #b91c1c;
+  --err-bg: #fef2f2;
+  --err-source-bg: #fee2e2;
+  --cycle: #b45309;
+  --cycle-bg: #fffbeb;
+  --cycle-ring: #f59e0b;
+  --ok: #15803d;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ------------------------------- 工具栏 ------------------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.toolbar h1 {
+  font-size: 15px;
+  margin: 0 16px 0 0;
+  font-weight: 700;
+}
+
+.btn {
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn:hover {
+  background: #f0f2f5;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover {
+  background: #1d4ed8;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.revision {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.import-error {
+  background: var(--err-bg);
+  color: var(--err);
+  border-bottom: 1px solid #fecaca;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  max-height: 130px;
+  overflow: auto;
+}
+
+/* ------------------------------- 公式栏 ------------------------------- */
+
+.formula-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.formula-bar .addr-label {
+  font-weight: 700;
+  min-width: 48px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.formula-bar .fx {
+  color: var(--muted);
+  font-style: italic;
+  font-family: ui-monospace, serif;
+}
+
+.formula-bar input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.formula-bar input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.formula-bar .hint {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* ------------------------------- 主区域 ------------------------------- */
+
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sheet-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+
+table.sheet {
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--panel);
+  table-layout: fixed;
+}
+
+table.sheet th,
+table.sheet td {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  height: 26px;
+  min-width: 88px;
+  max-width: 88px;
+  padding: 0;
+  position: relative;
+}
+
+table.sheet th {
+  background: #eef0f3;
+  font-weight: 600;
+  color: #4b5563;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 24px;
+}
+table.sheet th.rowhead-col {
+  left: 0;
+  z-index: 3;
+  min-width: 42px;
+}
+table.sheet td.rowhead {
+  background: #eef0f3;
+  text-align: center;
+  color: #4b5563;
+  min-width: 42px;
+  max-width: 42px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.cell {
+  width: 100%;
+  height: 100%;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  cursor: cell;
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.cell.number {
+  justify-content: flex-end;
+}
+
+.cell.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.cell.formula-text {
+  color: #374151;
+}
+
+/* 错误着色 */
+td.cell-error-source {
+  background: var(--err-source-bg);
+}
+td.cell-error-downstream {
+  background: var(--err-bg);
+}
+td.cell-cycle {
+  background: var(--cycle-bg);
+  box-shadow: inset 0 0 0 1px var(--cycle-ring);
+}
+.cell .err-mark {
+  color: var(--err);
+  font-weight: 700;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+td.cell-cycle .err-mark {
+  color: var(--cycle);
+}
+
+.cell-input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  padding: 0 5px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ------------------------------- 检查器 ------------------------------- */
+
+.inspector {
+  width: 320px;
+  min-width: 320px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.inspector h2 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.inspector h3 {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 14px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.inspector .mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  word-break: break-all;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 7px;
+}
+
+.inspector .value-ok {
+  color: var(--ok);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-weight: 700;
+  font-size: 14px;
+}
+.inspector .value-display {
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  margin-left: 8px;
+}
+
+.inspector .error-box {
+  border-radius: 4px;
+  padding: 7px 9px;
+  font-weight: 600;
+}
+.inspector .error-box.parse,
+.inspector .error-box.divzero {
+  background: var(--err-bg);
+  color: var(--err);
+  border: 1px solid #fecaca;
+}
+.inspector .error-box.cycle {
+  background: var(--cycle-bg);
+  color: var(--cycle);
+  border: 1px solid #fcd34d;
+}
+
+.path-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 4px;
+}
+.path-chain .arrow {
+  color: var(--muted);
+}
+.ref-chip {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.ref-chip:hover {
+  background: #e0e7ff;
+}
+.ref-chip.source {
+  background: var(--err-source-bg);
+  border-color: #fca5a5;
+  color: var(--err);
+  font-weight: 700;
+}
+.ref-chip.cycle-node {
+  background: var(--cycle-bg);
+  border-color: var(--cycle-ring);
+  color: var(--cycle);
+}
+
+.empty-note {
+  color: var(--muted);
+}
+
+.legend {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.legend .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+.legend .swatch {
+  width: 16px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
+
+/* --------------------------- 假设修改工作区 --------------------------- */
+
+.btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hyp-panel {
+  background: var(--panel);
+  border-bottom: 2px solid var(--accent);
+  padding: 8px 12px 10px;
+  max-height: 38vh;
+  overflow: auto;
+  box-shadow: inset 0 -2px 6px rgba(37, 99, 235, 0.06);
+}
+
+.hyp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.hyp-head h2 {
+  font-size: 13px;
+  margin: 0;
+  font-weight: 700;
+}
+.hyp-head .hyp-sub {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 1;
+}
+.hyp-close {
+  padding: 1px 8px;
+  line-height: 1.4;
+}
+
+.hyp-input-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 6px;
+}
+.hyp-input-table th {
+  text-align: left;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+}
+.hyp-col-idx {
+  width: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+.hyp-col-addr {
+  width: 120px;
+}
+.hyp-input-table input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 7px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.hyp-input-table input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.hyp-addr-input {
+  font-weight: 700;
+}
+
+.hyp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+.hyp-stat {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hyp-reject {
+  background: var(--err-bg);
+  color: var(--err);
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.hyp-stale {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.hyp-nochange {
+  color: var(--ok);
+  font-size: 12px;
+  padding: 4px 2px;
+}
+
+.hyp-diff-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+.hyp-diff-table th {
+  text-align: left;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+  position: sticky;
+  top: 0;
+}
+.hyp-diff-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #eef0f3;
+  vertical-align: top;
+}
+.hyp-diff-table tbody tr {
+  cursor: pointer;
+}
+.hyp-diff-table tbody tr:hover {
+  background: #f5f8ff;
+}
+.hyp-cell-key {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.hyp-cell-out {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  white-space: nowrap;
+  min-width: 90px;
+}
+.hyp-cell-path {
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.hyp-num {
+  color: var(--text);
+}
+.hyp-empty {
+  color: var(--muted);
+}
+.hyp-err {
+  font-weight: 700;
+}
+.hyp-err-parse,
+.hyp-err-divzero {
+  color: var(--err);
+}
+.hyp-err-cycle {
+  color: var(--cycle);
+}
+tr.hyp-row-cycle {
+  background: var(--cycle-bg);
+}
+tr.hyp-row-parse,
+tr.hyp-row-divzero {
+  background: #fffafa;
+}
+
