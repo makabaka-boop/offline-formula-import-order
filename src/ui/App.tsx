@@ -38,6 +38,10 @@ export function App() {
   const [importErrors, setImportErrors] = useState<string[] | null>(null);
   const [hypOpen, setHypOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** 导入序号：每发起一次导入递增。异步读取完成时若序号已被更新的导入
+   *  超过，或期间修订号变化（编辑/演示/清空/采纳预演），说明该结果是
+   *  “迟到的旧结果”，必须丢弃——不得改表、不得加修订、不得弹错误。 */
+  const importSeq = useRef(0);
 
   const refresh = useCallback(() => {
     setSnap(engine.getSnapshot());
@@ -138,7 +142,32 @@ export function App() {
   };
 
   const handleImportFile = async (file: File) => {
-    const text = await file.text();
+    // 发起时刻固定本次导入的序号与基准修订号：
+    // 导入、手工编辑、载入演示、清空、预演采纳共同遵守用户操作的先后顺序，
+    // 晚到的旧结果一律作废，绝不覆盖较新的操作。
+    const seq = ++importSeq.current;
+    const baseRevision = engine.getSnapshot().revision;
+    /** 本次导入是否已被更新的操作取代（更新的导入已开始，或工作簿修订号已变） */
+    const isStale = () =>
+      seq !== importSeq.current ||
+      engine.getSnapshot().revision !== baseRevision;
+
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      // 读取本身失败：只有本次导入仍是最新操作时才给出稳定的失败提示；
+      // 迟到的失败（已有更新导入或工作簿已变）不打扰当前表格。
+      if (!isStale()) {
+        setImportErrors([
+          `无法读取文件「${file.name}」：导入未完成，当前表格保持不变`,
+        ]);
+      }
+      return;
+    }
+    // 读取完成时已有更新的操作：丢弃旧结果，表格、依赖、修订号、错误提示都不动
+    if (isStale()) return;
+
     const result = validateImport(text);
     if (!result.ok) {
       // 整份拒绝，保留上次有效表

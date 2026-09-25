@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../test/setup-dom';
 import { describe, expect, it, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from './App';
 import { lastExport, resetExport } from '../test/setup';
@@ -61,6 +61,73 @@ async function exactOf(
   await user.click(cellDiv(container, addr));
   const inspector = container.querySelector('.inspector')!;
   return inspector.querySelector('.value-ok')?.textContent ?? '';
+}
+
+/* --------------------- 受控文件读取：精确控制完成/拒绝顺序 --------------------- */
+
+interface ControlledFile {
+  file: File;
+  /** 手动让 file.text() 成功返回给定文本 */
+  resolve: (text: string) => void;
+  /** 手动让 file.text() 拒绝（模拟读取失败） */
+  reject: (err: unknown) => void;
+}
+
+/** 构造一个 File，其 text() 返回由测试手动 settle 的 Promise */
+function controlledFile(name: string): ControlledFile {
+  let resolveFn: ((text: string) => void) | null = null;
+  let rejectFn: ((err: unknown) => void) | null = null;
+  const file = new File(['（内容由测试接管）'], name, {
+    type: 'application/json',
+  });
+  file.text = () =>
+    new Promise<string>((res, rej) => {
+      resolveFn = res;
+      rejectFn = rej;
+    });
+  return {
+    file,
+    // 委托到 text() 被调用时才捕获的 settle 函数（调用前 resolve/reject 尚不存在）
+    resolve: (text) => resolveFn!(text),
+    reject: (err) => rejectFn!(err),
+  };
+}
+
+/** 构造一份合法的导出快照 JSON（当前文件格式：format/version/cells） */
+function snapshotJson(cells: Record<string, string>): string {
+  return JSON.stringify({
+    format: 'onsite-sheet',
+    version: 1,
+    exportedAt: '2026-09-25T00:00:00.000Z',
+    revision: 1,
+    cells: Object.entries(cells).map(([addr, raw]) => ({
+      addr,
+      raw,
+      value: null,
+      display: null,
+      error: null,
+    })),
+  });
+}
+
+function fileInput(container: HTMLElement): HTMLInputElement {
+  return container.querySelector('input[type="file"]') as HTMLInputElement;
+}
+
+/** 选择文件：同步触发 onChange，导入流程运行到 await file.text() 处挂起 */
+async function uploadFile(container: HTMLElement, file: File): Promise<void> {
+  await act(async () => {
+    fireEvent.change(fileInput(container), { target: { files: [file] } });
+  });
+}
+
+/** 手动完成（或拒绝）一次读取，并等待导入后续（校验/落表/setState）全部落地 */
+async function settleRead(settle: () => void): Promise<void> {
+  await act(async () => {
+    settle();
+    // 让 await file.text() 的微任务续体在 act 作用域内执行完毕
+    await Promise.resolve();
+  });
 }
 
 describe('质检员复核工作流：空编辑 / 确认 / 取消 / 预演采纳 / 导出', () => {
@@ -238,5 +305,259 @@ describe('质检员复核工作流：空编辑 / 确认 / 取消 / 预演采纳 
     expect(cellDiv(container, 'A1').textContent).toBe('50');
     expect(await exactOf(user, container, 'B1')).toBe('56');
     expect(adoptButton()).toBeDisabled();
+  }, 60_000);
+});
+
+describe('预算导入的先后顺序：迟到的旧结果不得覆盖当前工作簿', () => {
+  beforeEach(() => {
+    resetExport();
+  });
+
+  it('双文件：较晚导入先完成即生效；较早的大文件迟到后被丢弃，表格/依赖/修订号不变', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+
+    // 先选大文件（读取慢、挂起），再选小文件
+    const big = controlledFile('big-budget.json');
+    const small = controlledFile('small-budget.json');
+    await uploadFile(container, big.file);
+    await uploadFile(container, small.file);
+
+    // 小文件先读完成 → 生效：K1=5，K2=K1*3=15，修订 r1
+    await settleRead(() =>
+      small.resolve(snapshotJson({ K1: '5', K2: '=K1*3' })),
+    );
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'K1').textContent).toBe('5');
+    expect(await exactOf(user, container, 'K2')).toBe('15');
+
+    // 大文件迟到 → 整体丢弃：不得覆盖表格、公式依赖结果与修订号，也不弹错误
+    await settleRead(() =>
+      big.resolve(snapshotJson({ A1: '1', B1: '=A1+1', C1: '=B1*2' })),
+    );
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'K1').textContent).toBe('5');
+    expect(await exactOf(user, container, 'K2')).toBe('15');
+    // 大文件的内容一律未落格
+    expect(cellDiv(container, 'A1').textContent).toBe('');
+    expect(cellDiv(container, 'B1').textContent).toBe('');
+    expect(container.querySelector('.import-error')).toBeNull();
+    // 导出也只反映当前（小文件）网格
+    await user.click(screen.getByRole('button', { name: '导出 JSON 快照' }));
+    const exported = JSON.parse(lastExport()) as {
+      revision: number;
+      cells: { addr: string; raw: string }[];
+    };
+    expect(exported.revision).toBe(1);
+    expect(exported.cells.map((c) => c.addr).sort()).toEqual(['K1', 'K2']);
+  }, 60_000);
+
+  it('导入读取期间改格子：迟到的导入结果被丢弃，手工编辑与下游重算保留', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '载入演示' }));
+    expect(revisionOf(container)).toBe(1);
+
+    const late = controlledFile('late-budget.json');
+    await uploadFile(container, late.file); // 读取挂起中
+
+    // 读取期间手工改 A1：8 -> 40（r2），下游 B1 = 40+3*2 = 46
+    await user.click(cellDiv(container, 'A1'));
+    await user.click(barInput(container));
+    await user.clear(barInput(container));
+    await user.type(barInput(container), '40');
+    await user.keyboard('{Enter}');
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'A1').textContent).toBe('40');
+
+    // 旧导入迟到 → 丢弃：编辑、下游与演示数据的错误标记都保持
+    await settleRead(() =>
+      late.resolve(snapshotJson({ A1: '999', B1: '=A1' })),
+    );
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'A1').textContent).toBe('40');
+    expect(await exactOf(user, container, 'B1')).toBe('46');
+    expect(await exactOf(user, container, 'C1')).toBe('98/3');
+    expect(cellDiv(container, 'H2').textContent).toBe('#DIV/0!');
+    expect(cellDiv(container, 'F1').textContent).toBe('#CYCLE!');
+    expect(container.querySelector('.import-error')).toBeNull();
+  }, 60_000);
+
+  it('导入读取期间载入演示：迟到的导入不得撤销演示数据', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+
+    const late = controlledFile('late-budget.json');
+    await uploadFile(container, late.file); // 空表 r0 时发起导入，读取挂起
+
+    // 读取期间载入演示（r1）
+    await user.click(screen.getByRole('button', { name: '载入演示' }));
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'A1').textContent).toBe('8');
+
+    // 旧导入迟到 → 丢弃：演示网格与修订号原样保留
+    await settleRead(() => late.resolve(snapshotJson({ A1: '7' })));
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'A1').textContent).toBe('8');
+    expect(await exactOf(user, container, 'B1')).toBe('14');
+    expect(cellDiv(container, 'F1').textContent).toBe('#CYCLE!');
+    expect(cellDiv(container, 'H2').textContent).toBe('#DIV/0!');
+    expect(container.querySelector('.import-error')).toBeNull();
+  }, 60_000);
+
+  it('导入读取期间清空表格：迟到的导入不得把清空撤销', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '载入演示' }));
+    expect(revisionOf(container)).toBe(1);
+
+    const late = controlledFile('late-budget.json');
+    await uploadFile(container, late.file); // 读取挂起中
+
+    // 读取期间清空（r2）
+    await user.click(screen.getByRole('button', { name: '清空' }));
+    expect(revisionOf(container)).toBe(2);
+    expect(container.textContent).toContain('0 个非空格');
+
+    // 旧导入迟到 → 丢弃：空表与修订号保持
+    await settleRead(() => late.resolve(snapshotJson({ A1: '7' })));
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'A1').textContent).toBe('');
+    expect(container.textContent).toContain('0 个非空格');
+    expect(container.querySelector('.import-error')).toBeNull();
+  }, 60_000);
+
+  it('旧文件非法、新文件已生效：迟到的校验错误不弹出；当前最新导入非法时错误提示照常', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+
+    // 先选（非法的）旧文件，再选（合法的）新文件
+    const oldBad = controlledFile('old-bad.json');
+    const newGood = controlledFile('new-good.json');
+    await uploadFile(container, oldBad.file);
+    await uploadFile(container, newGood.file);
+
+    // 新文件先完成 → 生效：M1=2，M2=M1*10=20，修订 r1
+    await settleRead(() =>
+      newGood.resolve(snapshotJson({ M1: '2', M2: '=M1*10' })),
+    );
+    expect(revisionOf(container)).toBe(1);
+    expect(await exactOf(user, container, 'M2')).toBe('20');
+
+    // 旧文件迟到且内容非法 → 不得弹出指向当前正常表格的错误提示
+    await settleRead(() =>
+      oldBad.resolve(
+        JSON.stringify({
+          format: 'onsite-sheet',
+          version: 1,
+          cells: [{ addr: 'A1', raw: '=SUM(1)' }],
+        }),
+      ),
+    );
+    expect(container.querySelector('.import-error')).toBeNull();
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'M1').textContent).toBe('2');
+    expect(await exactOf(user, container, 'M2')).toBe('20');
+
+    // 对照：当前最新的一次导入若非法，错误提示照常出现且保留当前表（单次导入语义不变）
+    const latestBad = controlledFile('latest-bad.json');
+    await uploadFile(container, latestBad.file);
+    await settleRead(() => latestBad.resolve('这不是 JSON'));
+    expect(container.querySelector('.import-error')).not.toBeNull();
+    expect(container.textContent).toContain('不是合法的 JSON 文件');
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'M1').textContent).toBe('2');
+    expect(await exactOf(user, container, 'M2')).toBe('20');
+    // 关闭提示后当前表仍正常
+    await user.click(screen.getByRole('button', { name: '知道了' }));
+    expect(container.querySelector('.import-error')).toBeNull();
+  }, 60_000);
+
+  it('读取失败：给出稳定失败提示，表格/修订号不变，有效预演不被连累', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '载入演示' }));
+    expect(revisionOf(container)).toBe(1);
+
+    // 基于 r1 建立一个有效预演：A1 8 -> 80
+    await previewOne(user, 'A1', '80');
+    expect(adoptButton()).not.toBeDisabled();
+    expect(container.querySelector('.hyp-stale')).toBeNull();
+
+    // 发起导入后读取本身失败
+    const broken = controlledFile('broken-budget.json');
+    await uploadFile(container, broken.file);
+    await settleRead(() => broken.reject(new Error('读取失败')));
+
+    // 稳定的失败结果：明确告知导入未完成、当前表格未受影响
+    expect(container.querySelector('.import-error')).not.toBeNull();
+    expect(container.textContent).toContain('broken-budget.json');
+    expect(container.textContent).toContain('导入未完成');
+    // 表格、下游与修订号不变
+    expect(revisionOf(container)).toBe(1);
+    expect(cellDiv(container, 'A1').textContent).toBe('8');
+    expect(await exactOf(user, container, 'B1')).toBe('14');
+    // 有效预演不被失败的导入连累：不过期、可采纳
+    expect(adoptButton()).not.toBeDisabled();
+    expect(container.querySelector('.hyp-stale')).toBeNull();
+    await user.click(adoptButton());
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'A1').textContent).toBe('80');
+    expect(await exactOf(user, container, 'B1')).toBe('86');
+    // 失败提示可关闭
+    await user.click(screen.getByRole('button', { name: '知道了' }));
+    expect(container.querySelector('.import-error')).toBeNull();
+  }, 60_000);
+
+  it('合法单次导入保持原有语义：整份替换、公式重算、修订号 +1、非法文件整份拒绝', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '载入演示' }));
+    expect(revisionOf(container)).toBe(1);
+
+    // 合法文件顺序完成 → 整份替换并全量重算（含环与除零标记）
+    const good = controlledFile('budget.json');
+    await uploadFile(container, good.file);
+    await settleRead(() =>
+      good.resolve(
+        snapshotJson({
+          P1: '10',
+          P2: '=P1/4',
+          Q1: '=Q2+1',
+          Q2: '=Q1-1',
+          R1: '0',
+          R2: '=5/R1',
+        }),
+      ),
+    );
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'P1').textContent).toBe('10');
+    expect(await exactOf(user, container, 'P2')).toBe('5/2');
+    expect(cellDiv(container, 'Q1').textContent).toBe('#CYCLE!');
+    expect(cellDiv(container, 'R2').textContent).toBe('#DIV/0!');
+    // 演示数据已被整份替换
+    expect(cellDiv(container, 'A1').textContent).toBe('');
+    expect(cellDiv(container, 'H2').textContent).toBe('');
+
+    // 紧接一次非法导入 → 整份拒绝、保留上次有效表
+    const bad = controlledFile('bad.json');
+    await uploadFile(container, bad.file);
+    await settleRead(() =>
+      bad.resolve(
+        JSON.stringify({
+          format: 'onsite-sheet',
+          version: 1,
+          cells: [
+            { addr: 'A1', raw: '1' },
+            { addr: 'A1', raw: '2' },
+          ],
+        }),
+      ),
+    );
+    expect(container.querySelector('.import-error')).not.toBeNull();
+    expect(container.textContent).toContain('重复');
+    expect(revisionOf(container)).toBe(2);
+    expect(cellDiv(container, 'P1').textContent).toBe('10');
+    expect(await exactOf(user, container, 'P2')).toBe('5/2');
   }, 60_000);
 });
